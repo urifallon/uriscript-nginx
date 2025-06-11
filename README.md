@@ -1,4 +1,4 @@
-# 🌀 nginx-domain-manager
+# 🌀 Nginx Install Script (Ubuntu/Debian)
 
 A lightweight Bash script to **automate the setup and management of NGINX**, domain configuration, Let's Encrypt SSL, and cleanup on Debian-based systems.  
 🔨🤖🔧 Ideal for developers, sysadmins, or DevOps engineers looking for quick NGINX provisioning.
@@ -16,10 +16,9 @@ A lightweight Bash script to **automate the setup and management of NGINX**, dom
 ## 🧰 Usage
 
 ```bash
-git clone https://github.com/yourusername/nginx-domain-manager.git
-cd nginx-domain-manager
-chmod +x nginx-setup.sh
-./nginx-setup.sh
+mkdir -p uriscript && cd uriscript && curl -O https://raw.githubusercontent.com/urifallon/uriscript-nginx/main/uriscript-nginx.sh
+chmod +x uriscript-nginx.sh
+./uriscript-nginx.sh
 ```
 
 You’ll be greeted with a menu:
@@ -64,9 +63,9 @@ A full teardown of everything the script sets up:
 ## 📂 File Structure
 
 ```bash
-nginx-domain-manager/
-├── nginx-setup.sh         # Main interactive script
-├── README.md              # You're reading it!
+uriscript/
+├── uriscript-nginx.sh         # Main interactive script
+├── ...
 ```
 
 ## 📁 Directory Overview
@@ -140,6 +139,3 @@ This removes:
 Created by [yourname](https://github.com/yourusername)  
 Pull requests and suggestions welcome!
 
-## 📜 License
-
-MIT License. Use responsibly.
