@@ -20,135 +20,164 @@ function install_nginx() {
     fi
 }
 
-function setup_domain() {
-    read -p "Do you want to configure a domain? (y/n): " CONFIG_DOMAIN
-    if [[ "$CONFIG_DOMAIN" =~ ^[Yy]$ ]]; then
-        read -p "Enter your domain (e.g., example.com): " DOMAIN
-        DOMAIN_DIR="$DOMAIN_DIR_BASE/$DOMAIN"
-        CONFIG_FILE="$NGINX_CONF_DIR/$DOMAIN.conf"
-        ENABLED_LINK="$NGINX_ENABLED_DIR/$DOMAIN.conf"
+function create_domain_dir() {
+    local domain="$1"
+    local dir="$DOMAIN_DIR_BASE/$domain"
+    echo "==> Creating domain directory: $dir"
+    sudo mkdir -p "$dir/html"
+    echo "<h1>$domain is working!</h1>" | sudo tee "$dir/html/index.html" >/dev/null
+    sudo chown -R $USER:$USER "$dir/html"
+    sudo chmod -R 755 "$dir"
+}
 
-        if [[ -d "$DOMAIN_DIR" || -f "$CONFIG_FILE" || -f "$ENABLED_LINK" ]]; then
-            echo "⚠️ Domain configuration already exists."
-            read -p "Do you want to remove existing configuration for $DOMAIN and reconfigure it? (y/n): " RESET_DOMAIN
-            if [[ "$RESET_DOMAIN" =~ ^[Yy]$ ]]; then
-                echo "==> Removing existing domain configuration"
-                sudo rm -rf "$DOMAIN_DIR"
-                sudo rm -f "$CONFIG_FILE"
-                sudo rm -f "$ENABLED_LINK"
-                sudo certbot delete --cert-name "$DOMAIN" || true
-                sudo crontab -l 2>/dev/null | grep -v "--nginx -d $DOMAIN" | sudo crontab -
-            else
-                echo "❌ Skipping domain configuration."
-                return
-            fi
-        fi
+function create_http_config() {
+    local domain="$1"
+    local config="$NGINX_CONF_DIR/$domain.conf"
+    local dir="$DOMAIN_DIR_BASE/$domain"
 
-        echo "==> Setting up domain directory: $DOMAIN_DIR"
-        sudo mkdir -p "$DOMAIN_DIR/html"
-        sudo chown -R $USER:$USER "$DOMAIN_DIR/html"
-        sudo chmod -R 755 "$DOMAIN_DIR"
-        echo "<h1>$DOMAIN is working!</h1>" | sudo tee "$DOMAIN_DIR/html/index.html" > /dev/null
-
-        read -p "Do you want to enable SSL with Let's Encrypt? (y/n): " ENABLE_SSL
-        read -p "Do you want to create a cron job for SSL renewal? (y/n): " ENABLE_CRON
-
-        if [[ "$ENABLE_SSL" =~ ^[Yy]$ ]]; then
-            echo "==> Creating NGINX config with SSL: $CONFIG_FILE"
-            sudo tee "$CONFIG_FILE" > /dev/null <<EOF
+    echo "==> Creating temporary HTTP config for $domain"
+    sudo tee "$config" > /dev/null <<EOF
 server {
     listen 80;
-    server_name $DOMAIN;
+    server_name $domain;
+    root $dir/html;
+    index index.html;
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+}
+EOF
+
+    sudo ln -sf "$config" "$NGINX_ENABLED_DIR/$domain.conf"
+    sudo nginx -t && sudo systemctl reload nginx
+}
+
+function request_ssl_cert() {
+    local domain="$1"
+    local webroot="$DOMAIN_DIR_BASE/$domain/html"
+
+    echo "==> Installing Certbot"
+    sudo apt install -y certbot python3-certbot-nginx
+
+    echo "==> Requesting SSL cert for $domain"
+    sudo certbot certonly --webroot -w "$webroot" -d "$domain"
+}
+
+function enable_https_config() {
+    local domain="$1"
+    local config="$NGINX_CONF_DIR/$domain.conf"
+    local dir="$DOMAIN_DIR_BASE/$domain"
+
+    echo "==> Updating config to enable HTTPS for $domain"
+    sudo tee "$config" > /dev/null <<EOF
+server {
+    listen 80;
+    server_name $domain;
     return 301 https://\$host\$request_uri;
 }
 
 server {
     listen 443 ssl;
-    server_name $DOMAIN;
-    root $DOMAIN_DIR/html;
+    server_name $domain;
+    root $dir/html;
     index index.html;
 
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/$domain/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$domain/privkey.pem;
 
     location / {
         try_files \$uri \$uri/ =404;
     }
 }
 EOF
-        else
-            echo "==> Creating NGINX config without SSL: $CONFIG_FILE"
-            sudo tee "$CONFIG_FILE" > /dev/null <<EOF
-server {
-    listen 80;
-    server_name $DOMAIN;
-    root $DOMAIN_DIR/html;
-    index index.html;
 
-    location / {
-        try_files \$uri \$uri/ =404;
-    }
+    sudo nginx -t && sudo systemctl reload nginx
 }
-EOF
+
+function add_ssl_cron() {
+    echo "==> Adding Certbot auto-renew cron job"
+    (sudo crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet") | sudo crontab -
+}
+
+function remove_existing_domain() {
+    local domain="$1"
+    local config="$NGINX_CONF_DIR/$domain.conf"
+    local link="$NGINX_ENABLED_DIR/$domain.conf"
+    local dir="$DOMAIN_DIR_BASE/$domain"
+
+    echo "==> Removing existing domain config for $domain"
+    sudo rm -rf "$dir"
+    sudo rm -f "$config" "$link"
+    sudo certbot delete --cert-name "$domain" || true
+    sudo crontab -l 2>/dev/null | grep -v "--nginx -d $domain" | sudo crontab -
+}
+
+function setup_domain() {
+    read -p "Do you want to configure a domain? (y/n): " CONFIG_DOMAIN
+    if [[ "$CONFIG_DOMAIN" =~ ^[Yy]$ ]]; then
+        read -p "Enter your domain (e.g., example.com): " DOMAIN
+        local config="$NGINX_CONF_DIR/$DOMAIN.conf"
+        local link="$NGINX_ENABLED_DIR/$DOMAIN.conf"
+
+        if [[ -d "$DOMAIN_DIR_BASE/$DOMAIN" || -f "$config" || -f "$link" ]]; then
+            echo "⚠️ Domain already exists."
+            read -p "Remove and reconfigure? (y/n): " RESET
+            if [[ "$RESET" =~ ^[Yy]$ ]]; then
+                remove_existing_domain "$DOMAIN"
+            else
+                echo "❌ Skipping."
+                return
+            fi
         fi
 
-        sudo ln -s "$CONFIG_FILE" "$ENABLED_LINK"
-        sudo nginx -t && sudo systemctl reload nginx
+        create_domain_dir "$DOMAIN"
+        read -p "Enable SSL with Let's Encrypt? (y/n): " ENABLE_SSL
+        read -p "Create cron job for SSL renew? (y/n): " ENABLE_CRON
 
         if [[ "$ENABLE_SSL" =~ ^[Yy]$ ]]; then
-            echo "==> Installing Certbot and configuring SSL"
-            sudo apt install -y certbot python3-certbot-nginx
-            sudo certbot --nginx -d "$DOMAIN"
+            create_http_config "$DOMAIN"
+            request_ssl_cert "$DOMAIN"
+            enable_https_config "$DOMAIN"
+        else
+            create_http_config "$DOMAIN"
         fi
 
-        if [[ "$ENABLE_CRON" =~ ^[Yy]$ ]]; then
-            echo "==> Adding cron job for Certbot renewal"
-            (sudo crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet") | sudo crontab -
+        if [[ "$ENABLE_SSL" =~ ^[Yy]$ && "$ENABLE_CRON" =~ ^[Yy]$ ]]; then
+            add_ssl_cron
         fi
 
-        echo "✅ Domain $DOMAIN configured."
+        echo "✅ $DOMAIN configured."
     else
-        echo "⚠️ Skipping domain configuration."
+        echo "⚠️ Skipping domain setup."
     fi
 }
 
 function remove_all() {
-    read -p "⚠️ Do you want to remove all NGINX, domain configurations, SSL certificates, and cron jobs set up by this script? (y/n): " CONFIRM_REMOVE
-    if [[ "$CONFIRM_REMOVE" =~ ^[Yy]$ ]]; then
-        read -p "⚠️ Are you absolutely sure? This will remove NGINX, all domains, SSL certs, and cron jobs. Type YES to confirm: " FINAL_CONFIRM
-        if [[ "${FINAL_CONFIRM^^}" == "YES" ]]; then
-            echo "==> Stopping and removing NGINX"
+    read -p "⚠️ Remove everything (nginx, domains, SSL, cron)? (y/n): " CONFIRM
+    if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
+        read -p "Type YES to confirm: " FINAL
+        if [[ "${FINAL^^}" == "YES" ]]; then
             sudo systemctl stop nginx
             sudo apt purge -y nginx nginx-common
             sudo apt autoremove -y
 
-            echo "==> Removing all domain directories from $DOMAIN_DIR_BASE"
             for dir in "$DOMAIN_DIR_BASE"/*; do
-                if [[ -d "$dir/html" ]]; then
-                    echo "Removing $dir"
-                    sudo rm -rf "$dir"
-                fi
+                [[ -d "$dir/html" ]] && sudo rm -rf "$dir"
             done
 
-            echo "==> Removing custom NGINX configs"
             sudo rm -f "$NGINX_CONF_DIR"/*.conf
             sudo rm -f "$NGINX_ENABLED_DIR"/*.conf
 
-            echo "==> Removing Certbot certificates"
             for domain in $(sudo certbot certificates 2>/dev/null | grep "Certificate Name:" | awk '{print $3}'); do
-                echo "Deleting SSL for $domain"
                 sudo certbot delete --cert-name "$domain"
             done
 
-            echo "==> Removing cron jobs related to certbot"
             sudo crontab -l 2>/dev/null | grep -v "certbot renew" | sudo crontab -
-
             echo "✅ All configurations removed."
         else
-            echo "❌ Final confirmation not received. Aborting."
+            echo "❌ Cancelled."
         fi
-    else
-        echo "❌ Removal cancelled."
     fi
 }
 
@@ -176,5 +205,4 @@ select opt in "${options[@]}"; do
             echo "Invalid option. Try again."
             ;;
     esac
-
 done
